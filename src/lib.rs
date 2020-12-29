@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::error::Error;
-use std::future::Future;
+
 use std::fmt;
 
 //use httparse::{Response, Request};
 use async_trait::async_trait;
-use regex::Regex;
-use log::{info, trace, warn};
+
+use log::{trace, warn};
 use async_std::{
     prelude::*,
     io,
@@ -38,11 +38,11 @@ pub struct Request<'a> {
 
 impl<'a> fmt::Display for Request<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {}\n", self.method, self.path)?;
+        writeln!(f, "{} {}", self.method, self.path)?;
         for (name, value) in &self.headers {
-            write!(f, "{}: {}\n", name, String::from_utf8_lossy(value))?;
+            writeln!(f, "{}: {}", name, String::from_utf8_lossy(value))?;
         }
-        write!(f, "\n{}", String::from_utf8_lossy(self.partial_body))
+        writeln!(f, "\n{}", String::from_utf8_lossy(self.partial_body))
     }
 }
 
@@ -78,7 +78,7 @@ where S: Server
         Ok(_) => (),
         Err(err) => {
             warn!("Problem handling request: {:?}", err);
-            ()
+            
         }
     }
 }
@@ -114,13 +114,13 @@ where S: Server
     }
     if req.version.unwrap_or(1) != 1 {
         // not supported
-        Err(io::ErrorKind::InvalidInput)?;
+        return Err(io::ErrorKind::InvalidInput.into());
     }
     // Call into the handle code, wait for the return
     trace!("HTTP/1.1 {method} {path}", method=req.method.unwrap_or("GET"), path=req.path.unwrap_or("/"));
     let mut req_headers = HashMap::default();
     for header in req.headers {
-        if header.name != "" {
+        if !header.name.is_empty() {
             req_headers.insert(String::from(header.name), Vec::from(header.value));
         }
     }
@@ -172,21 +172,21 @@ mod tests {
     
         #[async_trait]
         impl Server for TestServer {
-            async fn handle<'a>(&self, request: &mut Request<'a>, response: &mut Response) -> io::Result<()> {
+            async fn handle<'a>(&self, _request: &mut Request<'a>, response: &mut Response) -> io::Result<()> {
                 response.headers.insert("Content-Type", b"text/html; charset=utf-8");
-                response.body = Some(Vec::from(format!("<h1>Hello world!</h1>")));
+                response.body = Some(Vec::from("<h1>Hello world!</h1>".to_string()));
                 Ok(())
             }
         }
 
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let local_addr = listener.local_addr().unwrap();
-        let handle = task::spawn(async {
+        let _handle = task::spawn(async {
             serve(Arc::new(TestServer{}), listener).await.unwrap()
         });
         // Make a simple HTTP request with some other library
         let path = format!("http://localhost:{}", local_addr.port());
-        let mut res = reqwest::get(&path).await?;
+        let res = reqwest::get(&path).await?;
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.headers().get("Content-Type").unwrap(), "text/html; charset=utf-8");
         assert_eq!(res.text().await.unwrap(), "<h1>Hello world!</h1>");
@@ -209,7 +209,7 @@ mod tests {
 
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let local_addr = listener.local_addr().unwrap();
-        let handle = task::spawn(async {
+        let _handle = task::spawn(async {
             serve(Arc::new(TestServer{}), listener).await.unwrap()
         });
         // Make a simple HTTP request with some other library
