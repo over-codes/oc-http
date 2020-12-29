@@ -782,7 +782,6 @@ dependencies = [
  "env_logger",
  "httparse",
  "log",
- "regex",
  "reqwest",
  "tokio",
 ]

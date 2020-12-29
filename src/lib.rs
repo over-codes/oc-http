@@ -1,12 +1,9 @@
 use std::collections::HashMap;
 use std::error::Error;
-
 use std::fmt;
 
-//use httparse::{Response, Request};
 use async_trait::async_trait;
-
-use log::{trace, warn};
+use log::{info, warn};
 use async_std::{
     prelude::*,
     io,
@@ -117,7 +114,7 @@ where S: Server
         return Err(io::ErrorKind::InvalidInput.into());
     }
     // Call into the handle code, wait for the return
-    trace!("HTTP/1.1 {method} {path}", method=req.method.unwrap_or("GET"), path=req.path.unwrap_or("/"));
+    info!("HTTP/1.1 {method} {path}", method=req.method.unwrap_or("GET"), path=req.path.unwrap_or("/"));
     let mut req_headers = HashMap::default();
     for header in req.headers {
         if !header.name.is_empty() {
