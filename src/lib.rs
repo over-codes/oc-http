@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::error::Error;
 use std::fmt;
 
 use async_trait::async_trait;
@@ -11,11 +10,17 @@ use async_std::{
     net::{
         TcpListener,
         TcpStream,
-        Shutdown,
     },
-    sync::Arc,
+    sync::{
+        Arc,
+    },
 };
 
+mod stopper;
+
+use stopper::*;
+
+const NEWLINE: &[u8] = b"\r\n";
 const MAX_BUFFER_SIZE: usize = 16_000_000;
 
 pub struct Header {
@@ -57,15 +62,47 @@ pub trait Server: Send + Sync {
     async fn handle<'a>(&self, request: &mut Request<'a>, response: &mut Response) -> io::Result<()>;
 }
 
-pub async fn serve<S>(server: Arc<S>, listener: TcpListener) -> Result<(), Box<dyn Error>>
+pub struct HttpServer {
+    stop_token: StopToken,
+    stopper: Stopper,
+}
+
+impl HttpServer {
+    pub fn new() -> Self {
+        let (stopper, stop_token) = Stopper::new();
+        HttpServer {
+            stopper,
+            stop_token,
+        }
+    }
+    pub fn shutdown(&self) {
+        self.stopper.shutdown();
+    }
+
+    pub fn spawn<S>(&self, server: Arc<S>, listener: TcpListener) -> task::JoinHandle<()>
+    where S: Server + 'static
+    {
+        let stop_token = self.stop_token.clone();
+        task::spawn(serve_internal(server, listener, stop_token))
+    }
+}
+
+pub async fn serve<S>(server: Arc<S>, listener: TcpListener)
+where S: Server + 'static
+{
+    let (stopper, stop_token) = Stopper::new();
+    serve_internal(server, listener, stop_token).await;
+    stopper.shutdown();
+}
+
+async fn serve_internal<S>(server: Arc<S>, listener: TcpListener, stop_token: StopToken)
 where S: Server + 'static
 {
     let mut incoming = listener.incoming();
-    while let Some(stream) = incoming.next().await {
+    while let Some(stream) = incoming.next().race(stop_token.wait()).await {
         let server = server.clone();
         task::spawn(handle_request_wrapper(server, stream));
     }
-    Ok(())
 }
 
 async fn handle_request_wrapper<S>(server: Arc<S>, stream: io::Result<TcpStream>)
@@ -135,34 +172,35 @@ where S: Server
         body: None,
     };
     server.handle(&mut request, &mut response).await?;
-    let resp = format!("HTTP/1.1 {code} {reason}",
+    let mut writer = io::BufWriter::new(stream);
+    let buf = format!("HTTP/1.1 {code} {reason}",
         code=format!("{}", response.code.unwrap_or(200)),
         reason=response.reason.unwrap_or("OK"),
     );
-    stream.write_all(&resp.as_bytes()).await?;
+    writer.write_all(&buf.as_bytes()).await?;
     for (name, value) in &response.headers {
-        stream.write_all(format!("\n{name}: ", name=name).as_bytes()).await?;
-        stream.write_all(&value).await?;
+        writer.write_all(NEWLINE).await?;
+        writer.write_all(name.as_bytes()).await?;
+        writer.write_all(b": ").await?;
+        writer.write_all(&value).await?;
     }
-    stream.write_all(b"\n").await?;
+    // one to end the last header/status line, and one as required by the protocol
+    writer.write_all(NEWLINE).await?;
+    writer.write_all(NEWLINE).await?;
     // Write the body
     if let Some(body) = response.body {
-        stream.write_all(b"\n").await?;
-        stream.write_all(&body).await?;
-    } else {
-        stream.write_all(b"\n").await?;
+        writer.write_all(&body).await?;
     }
-    stream.shutdown(Shutdown::Both)?;
+    writer.flush().await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use std::error::Error;
-    use reqwest::StatusCode;
     use super::*;
 
-    #[tokio::test]
+    #[async_std::test]
     async fn test_hello_world() -> Result<(), Box<dyn Error>> {
         #[derive(Clone)]
         struct TestServer{}
@@ -171,7 +209,7 @@ mod tests {
         impl Server for TestServer {
             async fn handle<'a>(&self, _request: &mut Request<'a>, response: &mut Response) -> io::Result<()> {
                 response.headers.insert("Content-Type", b"text/html; charset=utf-8");
-                response.body = Some(Vec::from("<h1>Hello world!</h1>".to_string()));
+                response.body = Some(Vec::from("<h1>Hello world!</h1>"));
                 Ok(())
             }
         }
@@ -179,18 +217,18 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let local_addr = listener.local_addr().unwrap();
         let _handle = task::spawn(async {
-            serve(Arc::new(TestServer{}), listener).await.unwrap()
+            serve(Arc::new(TestServer{}), listener).await;
         });
         // Make a simple HTTP request with some other library
         let path = format!("http://localhost:{}", local_addr.port());
-        let res = reqwest::get(&path).await?;
-        assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(res.headers().get("Content-Type").unwrap(), "text/html; charset=utf-8");
-        assert_eq!(res.text().await.unwrap(), "<h1>Hello world!</h1>");
+        let res = ureq::get(&path).call();
+        assert_eq!(res.status(), 200);
+        assert_eq!(res.header("Content-Type").unwrap(), "text/html; charset=utf-8");
+        assert_eq!(res.into_string().unwrap(), "<h1>Hello world!</h1>");
         Ok(())
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn test_post_message() -> Result<(), Box<dyn Error>> {
         #[derive(Clone)]
         struct TestServer{}
@@ -198,8 +236,8 @@ mod tests {
         #[async_trait]
         impl Server for TestServer {
             async fn handle<'a>(&self, request: &mut Request<'a>, response: &mut Response) -> io::Result<()> {
+                assert_eq!(request.method, "POST");
                 response.headers.insert("Content-Type", b"text/html; charset=utf-8");
-                println!("message: {}", request);
                 Ok(())
             }
         }
@@ -207,17 +245,50 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let local_addr = listener.local_addr().unwrap();
         let _handle = task::spawn(async {
-            serve(Arc::new(TestServer{}), listener).await.unwrap()
+            serve(Arc::new(TestServer{}), listener).await;
         });
         // Make a simple HTTP request with some other library
         let path = format!("http://localhost:{}/post", local_addr.port());
         let params = [("foo", "bar"), ("baz", "quux")];
-        let client = reqwest::Client::new();
-        let res = client.post(&path)
-            .form(&params)
-            .send()
-            .await?;
-        assert_eq!(res.status(), StatusCode::OK);
+        let res = ureq::post(&path)
+            .send_form(&params);
+        assert_eq!(res.status(), 200);
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn test_shutdown_server() -> Result<(), Box<dyn Error>> {
+        #[derive(Clone)]
+        struct TestServer{}
+    
+        #[async_trait]
+        impl Server for TestServer {
+            async fn handle<'a>(&self, _: &mut Request<'a>, _: &mut Response) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let listener2 = TcpListener::bind("127.0.0.1:0").await?;
+        let local_addr = listener.local_addr().unwrap();
+        
+        // Spawn the server
+        let my_server = HttpServer::new();
+        let handle = my_server.spawn(Arc::new(TestServer{}), listener);
+        let handle2 = my_server.spawn(Arc::new(TestServer{}), listener2);
+        // Make a simple HTTP request with some other library, stop the server,and wait for join
+        let path = format!("http://localhost:{}", local_addr.port());
+        ureq::get(&path).call();
+        ureq::get(&path).call();
+        ureq::get(&path).call();
+        my_server.shutdown();
+
+        // Wait for the server to complate
+        handle.await;
+        handle2.await;
+
+        // Verify we can re-listen on one of these things
+        TcpListener::bind(local_addr).await?;
         Ok(())
     }
 }

@@ -70,23 +70,29 @@ Let's say you want to test your server. This is how I do it:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_std::{
-        task,
-        net::SocketAddr,
-    }
+    use oc_http::HttpServer;
 
-    fn run_server() -> SocketAddr {
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
+    async fn run_server() -> (String, HttpServer) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let local_addr = listener.local_addr().unwrap();
-        task::spawn(serve(Arc::new(MyServer{}), listener).await.unwrap());
-        local_addr
+        let http_server = HttpServer::new();
+        http_server.spawn(Arc::new(MyServer{}), listener);
+        (format!("http://localhost:{}", local_addr.port()), http_server)
     }
 
     #[async_std::test]
     async fn test_my_server() {
-        let remote = run_server();
-        let path = format!("http://localhost:{}", remote.port());
+        // when goes out of scope, the socket will close; this simplifies running many tests as we are
+        // less likely to run out of ports or break in some funny way
+        let (base_path, _http_server) = run_server().await;
         // do things
+        let resp = ureq::get(&format!("{}{}", base_path, "/hello")).call();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.into_string().unwrap(), "Hello world!");
     }
 }
 ```
+
+The pro to using oc_http::HttpServer here rather than just oc_http::serve is that cleanup is done when the test exits;
+we won't hold onto a bunch of garbage TCP sockets. This could also be useful if you want to do a proper cleanup when
+your process exits, or if you need to 'restart' the http server.
