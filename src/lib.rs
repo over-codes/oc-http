@@ -54,7 +54,7 @@ where S: AsyncBufRead + Unpin
         lines += 1;
         if lines > MAX_HEADERS {
             warn!("Request had more than {} headers; rejected", MAX_HEADERS);
-            Err(io::ErrorKind::InvalidInput)?;
+            return Err(io::ErrorKind::InvalidInput.into());
         }
         offset += count;
     }
@@ -69,7 +69,7 @@ where S: AsyncBufRead + Unpin
         },
         httparse::Status::Partial => {
             // this should never happen, since we made sure all headers were read
-            Err(io::ErrorKind::InvalidInput)?;
+            return Err(io::ErrorKind::InvalidInput.into());
         }
     }
     // This will always be one?

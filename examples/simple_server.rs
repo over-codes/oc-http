@@ -1,14 +1,12 @@
-#[macro_use] extern crate lazy_static;
 use std::{
     collections::HashMap,
     error::Error
 };
 use std::time::Duration;
-use log::{info, warn};
+use log::{warn};
 
 use env_logger::Env;
 use async_std::{
-    sync::Arc,
     task,
     io::{
         BufReader,
@@ -18,7 +16,7 @@ use async_std::{
         TcpListener,
     },
 };
-use regex::Regex;
+
 
 use futures::{
     prelude::*,
@@ -33,7 +31,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // start the server; we could reduce this to one line, but then you have to write an entire struct
     // to support it (or learn how to use super-dense map reduces)
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
-    let local_addr = listener.local_addr()?;
+    let _local_addr = listener.local_addr()?;
     let mut incoming = listener.incoming();
     // Accepting incoming reqeusts
     while let Some(stream) = incoming.next().await {
