@@ -38,6 +38,12 @@ impl Default for Response {
     }
 }
 
+/// Parses a stream for the http request; this does not parse the body at all,
+/// so it will remain entirely intact in stream.
+/// 
+/// There are currently some hard-coded limits on the number of headers and length
+/// of each header. The length is limited by the size of MAX_HEADER_LENGTH, and the
+/// number if limited by MAX_HEADERS.
 pub async fn http<S>(stream: &mut S) -> std::io::Result<Request>
 where S: AsyncBufRead + Unpin
 {
@@ -72,19 +78,20 @@ where S: AsyncBufRead + Unpin
             return Err(io::ErrorKind::InvalidInput.into());
         }
     }
-    // This will always be one?
+    // Accept any known version (at this time, I've only seen 1.1 and 1.0)
     if req.version.unwrap_or(1) > 2 {
         // not supported
         warn!("HTTP/1.{} request rejected; don't support that", &req.version.unwrap_or(1));
         return Err(io::ErrorKind::InvalidInput.into());
     }
-    // Convert the response to a request and return
+    // Put any headers into a hashmap for easy access
     let mut req_headers = HashMap::default();
     for header in req.headers {
         if !header.name.is_empty() {
             req_headers.insert(String::from(header.name), Vec::from(header.value));
         }
     }
+    // Convert the response to a request and return
     let request = Request{
         method: String::from(req.method.unwrap_or("GET")),
         path: String::from(req.path.unwrap_or("/")),
@@ -94,6 +101,9 @@ where S: AsyncBufRead + Unpin
     Ok(request)
 }
 
+/// Respond writes the provided response to the stream; this should be called before
+/// any part of the body is written. After being called, the body can be written
+/// directly to the stream.
 pub async fn respond<S>(stream: &mut S, response: Response) -> io::Result<()>
 where S: AsyncWrite + Unpin
 {
