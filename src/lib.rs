@@ -1,294 +1,169 @@
-use std::collections::HashMap;
-use std::fmt;
-
-use async_trait::async_trait;
-use log::{info, warn};
-use async_std::{
-    prelude::*,
+use std::{
+    collections::HashMap,
     io,
-    task,
-    net::{
-        TcpListener,
-        TcpStream,
-    },
-    sync::{
-        Arc,
-    },
+};
+use log::{info, warn};
+
+use futures::{
+    prelude::*,
+    AsyncBufRead,
+    AsyncWrite,
 };
 
-mod stopper;
-
-use stopper::*;
-
 const NEWLINE: &[u8] = b"\r\n";
-const MAX_BUFFER_SIZE: usize = 16_000_000;
-
-pub struct Header {
-    pub name: String,
-    pub value: Vec<u8>,
-}
+const MAX_HEADER_LENGTH: usize = 1024;
+const MAX_HEADERS: usize = 128;
 
 #[derive(Debug)]
-pub struct Request<'a> {
-    pub method: &'a str,
-    pub path: &'a str,
+pub struct Request {
+    pub method: String,
+    pub path: String,
     pub headers: HashMap<String, Vec<u8>>,
-    pub stream: TcpStream,
-    pub partial_body: &'a [u8],
 }
-
-
-impl<'a> fmt::Display for Request<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{} {}", self.method, self.path)?;
-        for (name, value) in &self.headers {
-            writeln!(f, "{}: {}", name, String::from_utf8_lossy(value))?;
-        }
-        writeln!(f, "\n{}", String::from_utf8_lossy(self.partial_body))
-    }
-}
-
 
 #[derive(Debug)]
 pub struct Response {
-    pub code: Option<usize>,
-    pub reason: Option<&'static str>,
-    pub headers: HashMap<&'static str, &'static [u8]>,
-    pub body: Option<Vec<u8>>,
+    pub code: usize,
+    pub reason: &'static str,
+    pub headers: HashMap<String, Vec<u8>>,
 }
 
-#[async_trait]
-pub trait Server: Send + Sync {
-    async fn handle<'a>(&self, request: &mut Request<'a>, response: &mut Response) -> io::Result<()>;
-}
-
-pub struct HttpServer {
-    stop_token: StopToken,
-    stopper: Stopper,
-}
-
-impl HttpServer {
-    pub fn new() -> Self {
-        let (stopper, stop_token) = Stopper::new();
-        HttpServer {
-            stopper,
-            stop_token,
-        }
-    }
-    pub fn shutdown(&self) {
-        self.stopper.shutdown();
-    }
-
-    pub fn spawn<S>(&self, server: Arc<S>, listener: TcpListener) -> task::JoinHandle<()>
-    where S: Server + 'static
-    {
-        let stop_token = self.stop_token.clone();
-        task::spawn(serve_internal(server, listener, stop_token))
-    }
-}
-
-pub async fn serve<S>(server: Arc<S>, listener: TcpListener)
-where S: Server + 'static
-{
-    let (stopper, stop_token) = Stopper::new();
-    serve_internal(server, listener, stop_token).await;
-    stopper.shutdown();
-}
-
-async fn serve_internal<S>(server: Arc<S>, listener: TcpListener, stop_token: StopToken)
-where S: Server + 'static
-{
-    let mut incoming = listener.incoming();
-    while let Some(stream) = incoming.next().race(stop_token.wait()).await {
-        let server = server.clone();
-        task::spawn(handle_request_wrapper(server, stream));
-    }
-}
-
-async fn handle_request_wrapper<S>(server: Arc<S>, stream: io::Result<TcpStream>)
-where S: Server
-{
-    match handle_request(server, stream).await {
-        Ok(_) => (),
-        Err(err) => {
-            warn!("Problem handling request: {:?}", err);
-            
+impl Default for Response {
+    fn default() -> Self {
+        Response{
+            code: 200,
+            reason: "OK",
+            headers: HashMap::default(),
         }
     }
 }
 
-async fn handle_request<S>(server: Arc<S>, stream: io::Result<TcpStream>) -> io::Result<()>
-where S: Server
+pub async fn http<S>(stream: &mut S) -> std::io::Result<Request>
+where S: AsyncBufRead + Unpin
 {
-    let mut stream = stream?;
-    let mut headers = [httparse::EMPTY_HEADER; 16];
-    let mut req = httparse::Request::new(&mut headers);
-    // read the message; try to parse, if fail, read more
-    let mut buf = vec![0; MAX_BUFFER_SIZE];
+    let mut buff = Vec::new();
     let mut offset = 0;
-    let mut max = 0;
-    while let Ok(count) = stream.read(&mut buf[offset..]).await {
+    let mut lines = 0;
+    while let Ok(count) = stream.take(MAX_HEADER_LENGTH as u64).read_until(b'\n', &mut buff).await {
         if count == 0 {
             break;
         }
+        if count < 3 && (&buff[offset..offset+count] == b"\r\n" || &buff[offset..offset+count] == b"\n") {
+            break;
+        }
+        lines += 1;
+        if lines > MAX_HEADERS {
+            warn!("Request had more than {} headers; rejected", MAX_HEADERS);
+            Err(io::ErrorKind::InvalidInput)?;
+        }
         offset += count;
-        let res = req.parse(&buf).or(Err(io::ErrorKind::InvalidInput))?;
-        match res {
-            httparse::Status::Complete(end) => {
-                max = offset;
-                offset = end;
-                break;
-            },
-            httparse::Status::Partial => {
-                // this results in an extra allocation, because the buffers may be polluted. It's fine...
-                headers = [httparse::EMPTY_HEADER; 16];
-                req = httparse::Request::new(&mut headers);
-            }
+    }
+    //println!("input\n\n{}", String::from_utf8_lossy(&buff));
+    // 1 status line, then a buncha headers
+    let mut headers = vec![httparse::EMPTY_HEADER; lines - 1];
+    let mut req = httparse::Request::new(&mut headers);
+    let res = req.parse(&buff).or(Err(io::ErrorKind::InvalidInput))?;
+    match res {
+        httparse::Status::Complete(_) => {
+            // sgtm
+        },
+        httparse::Status::Partial => {
+            // this should never happen, since we made sure all headers were read
+            Err(io::ErrorKind::InvalidInput)?;
         }
     }
-    if req.version.unwrap_or(1) != 1 {
+    // This will always be one?
+    if req.version.unwrap_or(1) > 2 {
         // not supported
+        warn!("HTTP/1.{} request rejected; don't support that", &req.version.unwrap_or(1));
         return Err(io::ErrorKind::InvalidInput.into());
     }
-    // Call into the handle code, wait for the return
-    info!("HTTP/1.1 {method} {path}", method=req.method.unwrap_or("GET"), path=req.path.unwrap_or("/"));
+    // Convert the response to a request and return
     let mut req_headers = HashMap::default();
     for header in req.headers {
         if !header.name.is_empty() {
             req_headers.insert(String::from(header.name), Vec::from(header.value));
         }
     }
-    let mut request = Request{
-        method: req.method.unwrap_or("GET"),
-        path: req.path.unwrap_or("/"),
+    let request = Request{
+        method: String::from(req.method.unwrap_or("GET")),
+        path: String::from(req.path.unwrap_or("/")),
         headers: req_headers,
-        stream: stream.clone(),
-        partial_body: &buf[offset..max],
     };
-    let mut response = Response{
-        code: None,
-        reason: None,
-        headers: HashMap::default(),
-        body: None,
-    };
-    server.handle(&mut request, &mut response).await?;
-    let mut writer = io::BufWriter::new(stream);
+    info!("HTTP/1.1 {method} {path}", method=request.method, path=request.path);
+    Ok(request)
+}
+
+pub async fn respond<S>(stream: &mut S, response: Response) -> io::Result<()>
+where S: AsyncWrite + Unpin
+{
     let buf = format!("HTTP/1.1 {code} {reason}",
-        code=format!("{}", response.code.unwrap_or(200)),
-        reason=response.reason.unwrap_or("OK"),
+        code=format!("{}", response.code),
+        reason=response.reason,
     );
-    writer.write_all(&buf.as_bytes()).await?;
+    stream.write_all(&buf.as_bytes()).await?;
     for (name, value) in &response.headers {
-        writer.write_all(NEWLINE).await?;
-        writer.write_all(name.as_bytes()).await?;
-        writer.write_all(b": ").await?;
-        writer.write_all(&value).await?;
+        stream.write_all(NEWLINE).await?;
+        stream.write_all(name.as_bytes()).await?;
+        stream.write_all(b": ").await?;
+        stream.write_all(&value).await?;
     }
     // one to end the last header/status line, and one as required by the protocol
-    writer.write_all(NEWLINE).await?;
-    writer.write_all(NEWLINE).await?;
-    // Write the body
-    if let Some(body) = response.body {
-        writer.write_all(&body).await?;
-    }
-    writer.flush().await?;
+    stream.write_all(NEWLINE).await?;
+    stream.write_all(NEWLINE).await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use std::error::Error;
+    use async_std::{
+        task,
+        net::{
+            TcpListener,
+        },
+        io::{
+            BufReader,
+            BufWriter,
+        }
+    };
     use super::*;
 
     #[async_std::test]
     async fn test_hello_world() -> Result<(), Box<dyn Error>> {
-        #[derive(Clone)]
-        struct TestServer{}
-    
-        #[async_trait]
-        impl Server for TestServer {
-            async fn handle<'a>(&self, _request: &mut Request<'a>, response: &mut Response) -> io::Result<()> {
-                response.headers.insert("Content-Type", b"text/html; charset=utf-8");
-                response.body = Some(Vec::from("<h1>Hello world!</h1>"));
-                Ok(())
-            }
-        }
-
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let local_addr = listener.local_addr().unwrap();
-        let _handle = task::spawn(async {
-            serve(Arc::new(TestServer{}), listener).await;
+        let handle = task::spawn(async move {
+            let mut incoming = listener.incoming();
+            while let Some(stream) = incoming.next().await {
+                let stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.clone());
+                let mut writer = BufWriter::new(stream);
+                let req = http(&mut reader).await.unwrap();
+                assert_eq!(req.method, "GET");
+                assert_eq!(req.path, "/");
+                // Response
+                let mut headers = HashMap::default();
+                headers.insert("Content-Type".into(), Vec::from("text/html; charset=utf-8".as_bytes()));
+                respond(&mut writer, Response{
+                    code: 200,
+                    reason: "OK",
+                    headers,
+                }).await.unwrap();
+                writer.write_all(b"<h1>Hello world!</h1>").await.unwrap();
+                writer.flush().await.unwrap();
+                break;
+            }
         });
         // Make a simple HTTP request with some other library
         let path = format!("http://localhost:{}", local_addr.port());
         let res = ureq::get(&path).call();
+        handle.await;
         assert_eq!(res.status(), 200);
         assert_eq!(res.header("Content-Type").unwrap(), "text/html; charset=utf-8");
         assert_eq!(res.into_string().unwrap(), "<h1>Hello world!</h1>");
         Ok(())
     }
 
-    #[async_std::test]
-    async fn test_post_message() -> Result<(), Box<dyn Error>> {
-        #[derive(Clone)]
-        struct TestServer{}
-    
-        #[async_trait]
-        impl Server for TestServer {
-            async fn handle<'a>(&self, request: &mut Request<'a>, response: &mut Response) -> io::Result<()> {
-                assert_eq!(request.method, "POST");
-                response.headers.insert("Content-Type", b"text/html; charset=utf-8");
-                Ok(())
-            }
-        }
-
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let local_addr = listener.local_addr().unwrap();
-        let _handle = task::spawn(async {
-            serve(Arc::new(TestServer{}), listener).await;
-        });
-        // Make a simple HTTP request with some other library
-        let path = format!("http://localhost:{}/post", local_addr.port());
-        let params = [("foo", "bar"), ("baz", "quux")];
-        let res = ureq::post(&path)
-            .send_form(&params);
-        assert_eq!(res.status(), 200);
-        Ok(())
-    }
-
-    #[async_std::test]
-    async fn test_shutdown_server() -> Result<(), Box<dyn Error>> {
-        #[derive(Clone)]
-        struct TestServer{}
-    
-        #[async_trait]
-        impl Server for TestServer {
-            async fn handle<'a>(&self, _: &mut Request<'a>, _: &mut Response) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let listener2 = TcpListener::bind("127.0.0.1:0").await?;
-        let local_addr = listener.local_addr().unwrap();
-        
-        // Spawn the server
-        let my_server = HttpServer::new();
-        let handle = my_server.spawn(Arc::new(TestServer{}), listener);
-        let handle2 = my_server.spawn(Arc::new(TestServer{}), listener2);
-        // Make a simple HTTP request with some other library, stop the server,and wait for join
-        let path = format!("http://localhost:{}", local_addr.port());
-        ureq::get(&path).call();
-        ureq::get(&path).call();
-        ureq::get(&path).call();
-        my_server.shutdown();
-
-        // Wait for the server to complate
-        handle.await;
-        handle2.await;
-
-        // Verify we can re-listen on one of these things
-        TcpListener::bind(local_addr).await?;
-        Ok(())
-    }
+    // TODO: test large messages
 }
