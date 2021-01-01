@@ -10,6 +10,8 @@ use futures::{
     AsyncWrite,
 };
 
+pub mod websocket;
+
 const NEWLINE: &[u8] = b"\r\n";
 const MAX_HEADER_LENGTH: usize = 1024;
 const MAX_HEADERS: usize = 128;

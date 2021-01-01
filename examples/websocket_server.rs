@@ -2,7 +2,6 @@ use std::{
     collections::HashMap,
     error::Error
 };
-use std::time::Duration;
 use log::{warn};
 
 use env_logger::Env;
@@ -21,6 +20,12 @@ use futures::{
     prelude::*,
     AsyncRead,
     AsyncWrite,
+};
+
+use oc_http::websocket::{
+    self,
+    WebSocketReader,
+    WebSocketWriter,
 };
 
 #[async_std::main]
@@ -44,14 +49,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn handle_request<S>(socket: S)
+async fn handle_request<S>(stream: S)
 where S: AsyncRead + AsyncWrite + Clone + Unpin
 {
     // parse the http request; we'll make a /echo service;
     // first get a reader and writer buffer thing to improve
     // performance.
-    let mut reader = BufReader::new(socket.clone());
-    let mut writer = BufWriter::new(socket);
+    let mut reader = BufReader::new(stream.clone());
     // Read the response
     let request = match oc_http::http(&mut reader).await {
         Ok(req) => req,
@@ -60,57 +64,25 @@ where S: AsyncRead + AsyncWrite + Clone + Unpin
             return;
         },
     };
-    // make sure it goes to /echo
-    if request.path == "/echo" && request.method == "GET" {
-        get_echo(&mut writer).await;
-    } else if request.path == "/echo" && request.method == "POST" {
-        post_echo(&mut reader, &mut writer).await;
+    // make sure it goes to /ws
+    if request.path == "/ws" && request.method == "GET" {
+        let ws = websocket::upgrade(&request, stream).await.unwrap();
+        handle_websocket(ws.0, ws.1).await;
     } else {
+        let mut writer = BufWriter::new(stream);
         oc_http::respond(&mut writer, oc_http::Response{
             code: 404,
             reason: "NOT FOUND",
             headers: HashMap::default(),
         }).await.unwrap();
-    }
-    writer.flush().await.unwrap();
-}
-
-async fn get_echo<S>(mut stream: &mut S)
-where S: AsyncWrite + Unpin
-{
-    oc_http::respond(&mut stream, oc_http::Response{
-        code: 200,
-        reason: "OK",
-        headers: HashMap::default(),
-    }).await.unwrap();
-    stream.write(b"
-<html>
-    <body>
-        <form method=\"POST\">
-            <input name=\"input\"></inpout>
-            <input type=\"submit\"></input>
-        </form>
-    </body>
-</html>
-    ").await.unwrap();
-}
-
-async fn post_echo<W, R>(reader: &mut R, mut writer: &mut W)
-where W: AsyncWrite + Unpin,
-    R: AsyncRead + Unpin,
-{
-    oc_http::respond(&mut writer, oc_http::Response{
-        code: 200,
-        reason: "OK",
-        headers: HashMap::default(),
-    }).await.unwrap();
-    // read the body and see what the message is
-    let mut buf = vec![0; 10];
-    while let Ok(Ok(count)) = async_std::future::timeout(Duration::from_millis(10), reader.read(&mut buf)).await {
-        if count == 0 {
-            break;
-        }
-        writer.write_all(&buf[..count]).await.unwrap();
         writer.flush().await.unwrap();
+    }
+}
+
+async fn handle_websocket<S>(mut rdr: WebSocketReader<S>, mut wrt: WebSocketWriter<S>)
+where S: AsyncRead + AsyncWrite + Clone + Unpin {
+    loop {
+         let msg = rdr.recv().await.unwrap();
+         wrt.write(&msg).await.unwrap();
     }
 }
