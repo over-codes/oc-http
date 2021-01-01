@@ -11,6 +11,7 @@ use futures::{
 };
 
 pub mod websocket;
+pub mod cookies;
 
 const NEWLINE: &[u8] = b"\r\n";
 const MAX_HEADER_LENGTH: usize = 1024;
@@ -27,7 +28,7 @@ pub struct Request {
 pub struct Response {
     pub code: usize,
     pub reason: &'static str,
-    pub headers: HashMap<String, Vec<u8>>,
+    pub headers: Vec<(String, Vec<u8>)>,
 }
 
 impl Default for Response {
@@ -35,7 +36,7 @@ impl Default for Response {
         Response{
             code: 200,
             reason: "OK",
-            headers: HashMap::default(),
+            headers: vec!(),
         }
     }
 }
@@ -155,8 +156,8 @@ mod tests {
                 assert_eq!(req.method, "GET");
                 assert_eq!(req.path, "/");
                 // Response
-                let mut headers = HashMap::default();
-                headers.insert("Content-Type".into(), Vec::from("text/html; charset=utf-8".as_bytes()));
+                let mut headers = vec!();
+                headers.push(("Content-Type".into(), Vec::from("text/html; charset=utf-8".as_bytes())));
                 respond(&mut writer, Response{
                     code: 200,
                     reason: "OK",

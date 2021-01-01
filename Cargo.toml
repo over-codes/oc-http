@@ -16,6 +16,9 @@ sha-1 = "0.9.2"
 base64 = "0.13.0"
 nom = "6"
 
+# needed for cookies
+cookie = { version = "0.14", features = ["percent-encode"]}
+
 [dev-dependencies]
 env_logger = "0.8"
 ureq = "1.5.4"

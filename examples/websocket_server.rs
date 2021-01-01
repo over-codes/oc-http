@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     error::Error
 };
 use log::{warn};
@@ -73,7 +72,7 @@ where S: AsyncRead + AsyncWrite + Clone + Unpin
         oc_http::respond(&mut writer, oc_http::Response{
             code: 404,
             reason: "NOT FOUND",
-            headers: HashMap::default(),
+            headers: vec!(),
         }).await.unwrap();
         writer.flush().await.unwrap();
     }

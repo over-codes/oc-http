@@ -1,6 +1,5 @@
 use std::{
     io,
-    collections::HashMap,
     convert::TryFrom,
     fmt,
 };
@@ -136,10 +135,10 @@ where S: AsyncRead + AsyncWrite + Clone + Unpin
     // magic string from the interwebs
     hasher.update("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
     let result = hasher.finalize();
-    let mut headers: HashMap<String, Vec<u8>> = HashMap::default();
-    headers.insert("Upgrade".into(), Vec::from("websocket"));
-    headers.insert("Connection".into(), Vec::from("Upgrade"));
-    headers.insert("Sec-WebSocket-Accept".into(), base64::encode(&result[..]).into());
+    let mut headers = vec!();
+    headers.push(("Upgrade".into(), Vec::from("websocket")));
+    headers.push(("Connection".into(), Vec::from("Upgrade")));
+    headers.push(("Sec-WebSocket-Accept".into(), base64::encode(&result[..]).into()));
     // complete the handshake
     respond(&mut stream, Response{
         code: 101,

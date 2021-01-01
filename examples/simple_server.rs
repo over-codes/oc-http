@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     error::Error
 };
 use std::time::Duration;
@@ -21,6 +20,10 @@ use futures::{
     prelude::*,
     AsyncRead,
     AsyncWrite,
+};
+
+use oc_http::{
+    cookies::{Cookies, Cookie},
 };
 
 #[async_std::main]
@@ -60,17 +63,25 @@ where S: AsyncRead + AsyncWrite + Clone + Unpin
             return;
         },
     };
+    // get the cookie jar
+    let mut cookies = Cookies::new(&request);
     // make sure it goes to /echo
     if request.path == "/echo" && request.method == "GET" {
         get_echo(&mut writer).await;
     } else if request.path == "/echo" && request.method == "POST" {
         post_echo(&mut reader, &mut writer).await;
+        if let Some(_c) = cookies.get("Who") {
+            writer.write(format!("You are a fool of a took!").as_bytes()).await.unwrap();
+        }
     } else {
-        oc_http::respond(&mut writer, oc_http::Response{
+        let mut res = oc_http::Response{
             code: 404,
             reason: "NOT FOUND",
-            headers: HashMap::default(),
-        }).await.unwrap();
+            headers: vec!(),
+        };
+        cookies.add_cookie(Cookie::new("Who", "You fool!"));
+        cookies.write_cookies(&mut res);
+        oc_http::respond(&mut writer, res).await.unwrap();
     }
     writer.flush().await.unwrap();
 }
@@ -81,7 +92,7 @@ where S: AsyncWrite + Unpin
     oc_http::respond(&mut stream, oc_http::Response{
         code: 200,
         reason: "OK",
-        headers: HashMap::default(),
+        headers: vec!(),
     }).await.unwrap();
     stream.write(b"
 <html>
@@ -102,7 +113,7 @@ where W: AsyncWrite + Unpin,
     oc_http::respond(&mut writer, oc_http::Response{
         code: 200,
         reason: "OK",
-        headers: HashMap::default(),
+        headers: vec!(),
     }).await.unwrap();
     // read the body and see what the message is
     let mut buf = vec![0; 10];
