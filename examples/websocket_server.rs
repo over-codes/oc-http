@@ -25,6 +25,7 @@ use oc_http::websocket::{
     self,
     WebSocketReader,
     WebSocketWriter,
+    WebSocketError,
 };
 
 #[async_std::main]
@@ -38,9 +39,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut incoming = listener.incoming();
     // Accepting incoming reqeusts
     while let Some(stream) = incoming.next().await {
-        // consider that I have 12 cores; so a single thread would need to run at 1/12 of my total CPU to
-        // block other threads; therefore, this thread could do 1/12 of what a single thread does in order
-        // to become the bottleneck.. Which is a fair bit, so don't be stingy.
         if let Ok(stream) = stream {
             task::spawn(handle_request(stream));
         }
@@ -81,7 +79,16 @@ where S: AsyncRead + AsyncWrite + Clone + Unpin
 async fn handle_websocket<S>(mut rdr: WebSocketReader<S>, mut wrt: WebSocketWriter<S>)
 where S: AsyncRead + AsyncWrite + Clone + Unpin {
     loop {
-         let msg = rdr.recv().await.unwrap();
+        // this will return an error when the socket is closed;
+        // oc_http::websocket::WebSocketError::ConnectionClosed
+         let msg = match rdr.recv().await {
+             Ok(msg) => msg,
+             Err(WebSocketError::ConnectionClosed) => return,
+             Err(err) => {
+                 warn!("Sadness is {:?}", err);
+                 return
+             },
+         };
          wrt.write(&msg).await.unwrap();
     }
 }

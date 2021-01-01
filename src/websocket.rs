@@ -39,7 +39,11 @@ pub enum WebSocketError {
 
 impl From<io::Error> for WebSocketError {
     fn from(err: io::Error) -> Self {
-        WebSocketError::IOError(format!("{:?}", err))
+        if err.kind() == io::ErrorKind::UnexpectedEof {
+            WebSocketError::ConnectionClosed
+        } else {
+            WebSocketError::IOError(format!("{:?}", err))
+        }
     }
 }
 
