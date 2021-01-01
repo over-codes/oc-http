@@ -17,6 +17,10 @@ require a few extra lines to get my goal), and has reasonable performance.
 
 If you're up for it, look at [examples/simple_server.rs], [examples/websocket_server.rs], and [examples/echo_server.rs]. They'll be up-to-date, unlike this doc.
 
+[examples/echo_server.rs]: https://github.com/over-codes/oc-http/blob/main/examples/echo_server.rs
+[examples/websocket_server.rs]: https://github.com/over-codes/oc-http/blob/main/examples/websocket_server.rs
+[examples/simple_server.rs]: https://github.com/over-codes/oc-http/blob/main/examples/simple_server.rs
+
 Add to Cargo.toml
 
 ```
