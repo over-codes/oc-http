@@ -15,7 +15,7 @@ require a few extra lines to get my goal), and has reasonable performance.
 
 ## Getting started
 
-If you're up for it, look at (examples/simple_server.rs), (examples/websocket_server.rs), and (examples/echo_server.rs). They'll be up-to-date, unlike this doc.
+If you're up for it, look at [examples/simple_server.rs], [examples/websocket_server.rs], and [examples/echo_server.rs]. They'll be up-to-date, unlike this doc.
 
 Add to Cargo.toml
 
