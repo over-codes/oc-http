@@ -24,7 +24,7 @@ const MAX_PAYLOAD_SIZE: u64 = 16_000;
 
 #[derive(Debug, Clone)]
 pub enum WebSocketError {
-    ConnectioNotUpgrade,
+    ConnectionNotUpgrade,
     NoConnectionHeader,
     NoUpgradeHeader,
     UpgradeNotToWebSocket,
@@ -118,7 +118,17 @@ where S: AsyncRead + AsyncWrite + Clone + Unpin
 {
     // sanity check that required headers are in place
     match req.headers.get("Connection") {
-        Some(header) => if header != b"Upgrade" { Err(WebSocketError::ConnectioNotUpgrade)? },
+        Some(header) => {
+            let mut ok = false;
+            if let Ok(txt) = std::str::from_utf8(header) {
+                if let Some(_) = txt.find("Upgrade") {
+                    ok = true;
+                }
+            }
+            if !ok {
+                Err(WebSocketError::ConnectionNotUpgrade)?
+            }
+        },
         None => Err(WebSocketError::NoConnectionHeader)?,
     };
     match req.headers.get("Upgrade") {

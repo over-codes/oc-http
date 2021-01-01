@@ -22,6 +22,7 @@ pub struct Request {
     pub method: String,
     pub path: String,
     pub headers: HashMap<String, Vec<u8>>,
+    pub handshake_len: usize,
 }
 
 #[derive(Debug)]
@@ -58,6 +59,7 @@ where S: AsyncBufRead + Unpin
             break;
         }
         if count < 3 && (&buff[offset..offset+count] == b"\r\n" || &buff[offset..offset+count] == b"\n") {
+            offset += count;
             break;
         }
         lines += 1;
@@ -99,6 +101,7 @@ where S: AsyncBufRead + Unpin
         method: String::from(req.method.unwrap_or("GET")),
         path: String::from(req.path.unwrap_or("/")),
         headers: req_headers,
+        handshake_len: offset,
     };
     info!("HTTP/1.1 {method} {path}", method=request.method, path=request.path);
     Ok(request)
