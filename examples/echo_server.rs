@@ -55,8 +55,9 @@ where S: AsyncRead + AsyncWrite + Clone + Unpin
     // performance.
     let mut reader = BufReader::new(socket.clone());
     let mut writer = BufWriter::new(socket);
+    let mut buf = vec![0; 65536];
     // Read the response
-    let request = match oc_http::http(&mut reader).await {
+    let request = match oc_http::http(&mut reader, &mut buf).await {
         Ok(req) => req,
         Err(err) => {
             warn!("Error {}", err);

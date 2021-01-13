@@ -113,14 +113,14 @@ pub struct Message{
     pub contents: Vec<u8>,
 }
 
-pub async fn upgrade<S>(req: &Request, mut stream: S) -> Result<(WebSocketReader<S>, WebSocketWriter<S>), WebSocketError>
+pub async fn upgrade<'a, S>(req: &Request<'a>, mut stream: S) -> Result<(WebSocketReader<S>, WebSocketWriter<S>), WebSocketError>
 where S: AsyncRead + AsyncWrite + Clone + Unpin
 {
     // sanity check that required headers are in place
     match req.headers.get("Connection") {
         Some(header) => {
             let mut ok = false;
-            if let Ok(txt) = std::str::from_utf8(header) {
+            if let Ok(txt) = std::str::from_utf8(header.0) {
                 if let Some(_) = txt.find("Upgrade") {
                     ok = true;
                 }
@@ -132,16 +132,16 @@ where S: AsyncRead + AsyncWrite + Clone + Unpin
         None => Err(WebSocketError::NoConnectionHeader)?,
     };
     match req.headers.get("Upgrade") {
-        Some(header) => if header != b"websocket" { Err(WebSocketError::UpgradeNotToWebSocket)? },
+        Some(header) => if header.0 != b"websocket" { Err(WebSocketError::UpgradeNotToWebSocket)? },
         None => Err(WebSocketError::NoUpgradeHeader)?,
     };
     match req.headers.get("Sec-WebSocket-Version") {
-        Some(header) => if header != b"13" { Err(WebSocketError::WrongVersion)? },
+        Some(header) => if header.0 != b"13" { Err(WebSocketError::WrongVersion)? },
         None => Err(WebSocketError::WrongVersion)?,
     };
     // get the key we need to hash in the response
     let key = match req.headers.get("Sec-WebSocket-Key") {
-        Some(k) => k,
+        Some(k) => k.0,
         None => Err(WebSocketError::NoKey)?,
     };
     let mut hasher = Sha1::new();

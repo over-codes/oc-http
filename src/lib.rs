@@ -2,11 +2,10 @@ use std::{
     collections::HashMap,
     io,
 };
-use log::{info, warn};
+use log::{warn};
 
 use futures::{
     prelude::*,
-    AsyncBufRead,
     AsyncWrite,
 };
 
@@ -14,15 +13,13 @@ pub mod websocket;
 pub mod cookies;
 
 const NEWLINE: &[u8] = b"\r\n";
-const MAX_HEADER_LENGTH: usize = 1024;
-const MAX_HEADERS: usize = 128;
 
 #[derive(Debug)]
-pub struct Request {
+pub struct Request<'a> {
     pub method: String,
     pub path: String,
-    pub headers: HashMap<String, Vec<u8>>,
-    pub handshake_len: usize,
+    // Returns a mapping of header => (first_value, other values)
+    pub headers: HashMap<&'a str, (&'a [u8], Option<Vec<&'a [u8]>>)>,
 }
 
 #[derive(Debug)]
@@ -42,38 +39,60 @@ impl Default for Response {
     }
 }
 
+/// populates the provided buffer with bytes from the stream.
+async fn populate_buffer<S>(stream: &mut S, buf: &mut [u8]) -> std::io::Result<usize>
+where S: AsyncRead + Unpin
+{
+    let mut lines = 0;
+    let mut i = 0;
+    let mut j;
+    let mut last_newline_at = 0;
+    'read_loop: loop {
+        j = i+1;
+        // read one byte
+        let count = stream.read(&mut buf[i..j]).await?;
+        if count == 0 {
+            // this will likely only happen if the client disconnects before header is sent
+            break;
+        }
+        // if the byte we read was a newline, extract logic
+        if buf[i] == b'\n' {
+            if i - last_newline_at < 3 {
+                // we might be at the end; check if last_newline_at..j is a terminal case
+                let part = &buf[last_newline_at..j];
+                if part == b"\n\r\n" || part == b"\n\n" {
+                    break 'read_loop;
+                }
+            }
+            lines += 1;
+            last_newline_at = i;
+        }
+        i += 1;
+        if i == buf.len() {
+            break 'read_loop;
+        }
+    }
+    Ok(lines)
+}
+
 /// Parses a stream for the http request; this does not parse the body at all,
 /// so it will remain entirely intact in stream.
 /// 
-/// There are currently some hard-coded limits on the number of headers and length
-/// of each header. The length is limited by the size of MAX_HEADER_LENGTH, and the
-/// number if limited by MAX_HEADERS.
-pub async fn http<S>(stream: &mut S) -> std::io::Result<Request>
-where S: AsyncBufRead + Unpin
+/// I strongly recommend you use a BufReader for the input stream. The size of the
+/// provided buffer bounds the maximum number/length of the headers, so don't be too
+/// stingy with it.
+pub async fn http<'a, S>(stream: &mut S, buf: &'a mut [u8]) -> std::io::Result<Request<'a>>
+where S: AsyncRead + Unpin
 {
-    let mut buff = Vec::new();
-    let mut offset = 0;
-    let mut lines = 0;
-    while let Ok(count) = stream.take(MAX_HEADER_LENGTH as u64).read_until(b'\n', &mut buff).await {
-        if count == 0 {
-            break;
-        }
-        if count < 3 && (&buff[offset..offset+count] == b"\r\n" || &buff[offset..offset+count] == b"\n") {
-            offset += count;
-            break;
-        }
-        lines += 1;
-        if lines > MAX_HEADERS {
-            warn!("Request had more than {} headers; rejected", MAX_HEADERS);
-            return Err(io::ErrorKind::InvalidInput.into());
-        }
-        offset += count;
+    let lines = populate_buffer(stream, buf).await?;
+    if lines == 0 {
+        // if the client disconnects before finishing the first line, we might have a problem
+        return Err(io::ErrorKind::InvalidInput.into());
     }
-    //println!("input\n\n{}", String::from_utf8_lossy(&buff));
     // 1 status line, then a buncha headers
-    let mut headers = vec![httparse::EMPTY_HEADER; lines - 1];
-    let mut req = httparse::Request::new(&mut headers);
-    let res = req.parse(&buff).or(Err(io::ErrorKind::InvalidInput))?;
+    let mut raw_headers = vec![httparse::EMPTY_HEADER; lines - 1];
+    let mut req = httparse::Request::new(&mut raw_headers);
+    let res = req.parse(buf).or(Err(io::ErrorKind::InvalidInput))?;
     match res {
         httparse::Status::Complete(_) => {
             // sgtm
@@ -89,21 +108,22 @@ where S: AsyncBufRead + Unpin
         warn!("HTTP/1.{} request rejected; don't support that", &req.version.unwrap_or(1));
         return Err(io::ErrorKind::InvalidInput.into());
     }
-    // Put any headers into a hashmap for easy access
-    let mut req_headers = HashMap::default();
+    let mut headers: HashMap<&str, (&[u8], Option<Vec<&[u8]>>)> = HashMap::default();
     for header in req.headers {
-        if !header.name.is_empty() {
-            req_headers.insert(String::from(header.name), Vec::from(header.value));
+        if let Some(existing) = headers.get_mut(header.name) {
+            let v = existing.1.get_or_insert(vec!());
+            v.push(header.value);
+        } else {
+            headers.insert(header.name, (header.value, None));
         }
     }
     // Convert the response to a request and return
     let request = Request{
         method: String::from(req.method.unwrap_or("GET")),
         path: String::from(req.path.unwrap_or("/")),
-        headers: req_headers,
-        handshake_len: offset,
+        headers,
     };
-    info!("HTTP/1.1 {method} {path}", method=request.method, path=request.path);
+    //info!("HTTP/1.1 {method} {path}", method=request.method, path=request.path);
     Ok(request)
 }
 
@@ -170,7 +190,8 @@ mod tests {
                 let stream = stream.unwrap();
                 let mut reader = BufReader::new(stream.clone());
                 let mut writer = BufWriter::new(stream);
-                let req = http(&mut reader).await.unwrap();
+                let mut buf = vec![0; 64000];
+                let req = http(&mut reader, &mut buf).await.unwrap();
                 assert_eq!(req.method, "GET");
                 assert_eq!(req.path, "/");
                 // Response
@@ -193,6 +214,40 @@ mod tests {
         assert_eq!(res.status(), 200);
         assert_eq!(res.header("Content-Type").unwrap(), "text/html; charset=utf-8");
         assert_eq!(res.into_string().unwrap(), "<h1>Hello world!</h1>");
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn test_server_parses_headers() -> Result<(), Box<dyn Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let local_addr = listener.local_addr().unwrap();
+        let handle = task::spawn(async move {
+            let mut incoming = listener.incoming();
+            while let Some(stream) = incoming.next().await {
+                let stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.clone());
+                let mut writer = BufWriter::new(stream);
+                let mut buf = vec![0; 65536];
+                let req = http(&mut reader, &mut buf).await.unwrap();
+                println!("req: {:?}", req);
+                assert_eq!(req.method, "GET");
+                assert_eq!(req.path, "/");
+                assert_eq!(req.headers.len(), 4);
+                // Response
+                respond(&mut writer, Response{
+                    code: 200,
+                    reason: "OK",
+                    headers: vec!(),
+                }).await.unwrap();
+                break;
+            }
+        });
+        // Make a simple HTTP request with some other library
+        let path = format!("http://localhost:{}", local_addr.port());
+        ureq::get(&path)
+            .set("Transfer-Encoding", "chunked")
+            .call();
+        handle.await;
         Ok(())
     }
 

@@ -26,7 +26,7 @@ impl<'a> Cookies<'a> {
                 cookies_to_set: vec!(),
             }
         }
-        for cookie in iter_cookies.unwrap().split(|x| *x == b';') {
+        for cookie in iter_cookies.unwrap().0.split(|x| *x == b';') {
             let cookie = match str::from_utf8(cookie) {
                 Ok(s) => s,
                 Err(_) => {
