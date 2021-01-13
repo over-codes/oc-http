@@ -130,6 +130,21 @@ where S: AsyncWrite + Unpin
     Ok(())
 }
 
+// send_content writes all of the contents to the specified stream. Use this to send
+// body contents (such as a HTML page).
+pub async fn send_content<S>(writer: &mut S, contents: &[u8]) -> io::Result<()>
+where S: AsyncWrite + Unpin
+{
+    let mut offset = 0;
+    while let Ok(count) = writer.write(&contents[offset..]).await {
+        offset += count;
+        if offset == contents.len() {
+            break;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::error::Error;
