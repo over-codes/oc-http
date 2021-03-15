@@ -15,6 +15,10 @@ pub use form_urlencoded;
 pub mod websocket;
 pub mod cookies;
 
+
+#[cfg(test)]
+pub mod stopper;
+
 const NEWLINE: &[u8] = b"\r\n";
 
 #[derive(Debug)]

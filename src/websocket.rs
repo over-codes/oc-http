@@ -59,7 +59,7 @@ impl fmt::Display for WebSocketError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageType {
     Continuation,
     Text,
@@ -107,7 +107,7 @@ impl Into<u8> for MessageType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message{
     pub typ: MessageType,
     pub contents: Vec<u8>,
@@ -330,4 +330,76 @@ fn read_header_internal_bits(input: (&[u8], usize)) -> IResult<(&[u8], usize), W
     let (input, mask) = take(1usize)(input)?;
     let (input, payload_len) = take(7usize)(input)?;
     Ok((input, WebSocketHeader{fin, opcode, mask, payload_len, masking_key: vec!()}))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use async_std::{
+        prelude::*,
+        task,
+        net::{
+            TcpListener,
+            SocketAddr,
+            TcpStream,
+        },
+        io::{
+            BufReader,
+            BufWriter,
+        }
+    };
+    use websocket::client::ClientBuilder;
+    
+    use super::*;
+    use crate::stopper::Stopper;
+
+    async fn server<F: Fn(TcpStream) + 'static + Send>(func: F) -> (SocketAddr, Stopper) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_addr = listener.local_addr().unwrap();
+        let (stopper, token) = Stopper::new();
+        // Accepting incoming reqeusts
+        task::spawn(async move {
+            let mut incoming = listener.incoming();
+            while let Some(stream) = incoming.next().race(token.wait()).await {
+                if let Ok(stream) = stream {
+                    func(stream);
+                }
+            }
+        });
+        (local_addr, stopper)
+    }
+
+    #[async_std::test]
+    async fn test_hello_world() -> Result<(), Box<dyn Error>> {
+        let (sock, stop) = server(|stream| {
+            task::spawn(async move {
+                let mut reader = BufReader::new(stream.clone());
+                let mut buf = vec![0; 65536];
+                let request = match crate::http(&mut reader, &mut buf).await {
+                    Ok(req) => req,
+                    Err(_) => {
+                        return;
+                    },
+                };
+                let (mut rdr, mut wrt) = upgrade(&request, stream).await.unwrap();
+                let wantMsg = Message{
+                    typ: MessageType::Text,
+                    contents: Vec::from("hello world!"),
+                };
+                let msg = rdr.recv().await.unwrap();
+                assert_eq!(msg, wantMsg);
+                wrt.write(&wantMsg).await.unwrap();
+            });
+        }).await;
+        let mut client = ClientBuilder::new(&format!("ws://{}/ws", sock)).unwrap()
+            .connect(None)
+            .unwrap();
+        let msg = websocket::Message::text("hello world!");
+        client.send_message(&msg).unwrap();
+        let resp = client.recv_message().unwrap();
+        assert_eq!(resp, websocket::OwnedMessage::Text("hello world!".to_string()));
+        stop.shutdown();
+        Ok(())
+    }
 }
