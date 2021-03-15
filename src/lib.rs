@@ -9,6 +9,9 @@ use futures::{
     AsyncWrite,
 };
 
+/// rexport of the urlencoded crate for convenience.
+pub use form_urlencoded;
+
 pub mod websocket;
 pub mod cookies;
 
