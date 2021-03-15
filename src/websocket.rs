@@ -346,7 +346,6 @@ mod tests {
         },
         io::{
             BufReader,
-            BufWriter,
         }
     };
     use websocket::client::ClientBuilder;
@@ -383,13 +382,13 @@ mod tests {
                     },
                 };
                 let (mut rdr, mut wrt) = upgrade(&request, stream).await.unwrap();
-                let wantMsg = Message{
+                let want_msg = Message{
                     typ: MessageType::Text,
                     contents: Vec::from("hello world!"),
                 };
                 let msg = rdr.recv().await.unwrap();
-                assert_eq!(msg, wantMsg);
-                wrt.write(&wantMsg).await.unwrap();
+                assert_eq!(msg, want_msg);
+                wrt.write(&want_msg).await.unwrap();
             });
         }).await;
         let mut client = ClientBuilder::new(&format!("ws://{}/ws", sock)).unwrap()
